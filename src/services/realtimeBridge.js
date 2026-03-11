@@ -43,7 +43,13 @@ export function attachRealtimeBridge({
     console.log("[bridge]", ...args);
   }
 
-  wss.on("connection", (twilioWs) => {
+  wss.on("connection", (twilioWs, req) => {
+    console.log("[bridge] twilio websocket connected", {
+      url: req?.url || null,
+      ua: req?.headers?.["user-agent"] || null,
+      xfwd: req?.headers?.["x-forwarded-for"] || null,
+    });
+
     let streamSid = null;
     let callSid = null;
     let fromNumber = null;
@@ -174,7 +180,10 @@ export function attachRealtimeBridge({
       const base = String(PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
       if (!base.startsWith("http")) return false;
       try {
-        await twilioClient.calls(callSid).update({ url: `${base}/twilio/transfer`, method: "POST" });
+        await twilioClient.calls(callSid).update({
+          url: `${base}/twilio/transfer`,
+          method: "POST",
+        });
         return true;
       } catch (e) {
         console.log("[twilio] redirect transfer failed", e?.message || e);
@@ -405,14 +414,27 @@ export function attachRealtimeBridge({
       const model = s(tenantConfig?.realtime?.model) || REALTIME_MODEL;
       const voice = s(tenantConfig?.realtime?.voice) || REALTIME_VOICE;
 
-      openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "OpenAI-Beta": "realtime=v1",
-        },
+      console.log("[bridge] opening openai realtime", {
+        attempt: reconnectAttempts,
+        model,
+        voice,
+        tenantKey,
+        callSid,
       });
 
+      openaiWs = new WebSocket(
+        `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "OpenAI-Beta": "realtime=v1",
+          },
+        }
+      );
+
       openaiWs.on("open", () => {
+        console.log("[bridge] openai websocket open", { callSid, streamSid });
+
         try {
           openaiWs.send(
             JSON.stringify({
@@ -431,7 +453,9 @@ export function attachRealtimeBridge({
               },
             })
           );
-        } catch {}
+        } catch (e) {
+          console.log("[bridge] session.update send failed", e?.message || e);
+        }
       });
 
       openaiWs.on("message", async (buf) => {
@@ -439,6 +463,12 @@ export function attachRealtimeBridge({
         if (!msg || typeof msg !== "object") return;
 
         if (msg.type === "session.created" || msg.type === "session.updated") {
+          console.log("[bridge] openai session ready", {
+            type: msg.type,
+            callSid,
+            streamSid,
+          });
+
           openaiSessionReady = true;
           setPending(false);
           assistantSpeaking = false;
@@ -488,6 +518,7 @@ export function attachRealtimeBridge({
             lastFinalTranscript = text;
             core.pushTranscript(text);
             lastLang = core.state.lastLang || lastLang;
+            dlog("transcript", text);
           }
           return;
         }
@@ -536,7 +567,18 @@ export function attachRealtimeBridge({
         }
       });
 
-      openaiWs.on("close", () => {
+      openaiWs.on("close", (code, reasonBuf) => {
+        const reason =
+          Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
+
+        console.log("[bridge] openai websocket close", {
+          code,
+          reason,
+          callSid,
+          streamSid,
+          reconnectAttempts,
+        });
+
         openaiSessionReady = false;
         setPending(false);
         assistantSpeaking = false;
@@ -563,7 +605,7 @@ export function attachRealtimeBridge({
         setPending(false);
         assistantSpeaking = false;
         markGreetingEnd();
-        console.log("[OAI] error", e?.message || e);
+        console.log("[bridge] openai websocket error", e?.message || e);
       });
     }
 
@@ -577,6 +619,14 @@ export function attachRealtimeBridge({
         fromNumber = msg.start?.customParameters?.From || msg.start?.from || null;
         toNumber = msg.start?.customParameters?.To || null;
         tenantKey = msg.start?.customParameters?.TenantKey || null;
+
+        console.log("[bridge] start event", {
+          streamSid,
+          callSid,
+          from: fromNumber,
+          to: toNumber,
+          tenantKey,
+        });
 
         tenantConfig = await getTenantVoiceConfig({
           tenant: {
@@ -618,6 +668,7 @@ export function attachRealtimeBridge({
         core.resetForNewCall({ callSid, fromNumber, tenantConfig });
 
         if (!OPENAI_API_KEY) {
+          console.log("[bridge] missing OPENAI_API_KEY");
           try {
             twilioWs.close();
           } catch {}
@@ -651,6 +702,8 @@ export function attachRealtimeBridge({
       }
 
       if (msg.event === "stop") {
+        console.log("[bridge] stop event", { callSid, streamSid });
+
         reporters
           ?.sendReports?.(
             core.getReportCtx(durationSec, { metricResponses, metricCancels }),
@@ -660,7 +713,17 @@ export function attachRealtimeBridge({
       }
     });
 
-    twilioWs.on("close", () => {
+    twilioWs.on("close", (code, reasonBuf) => {
+      const reason =
+        Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
+
+      console.log("[bridge] twilio websocket close", {
+        code,
+        reason,
+        callSid,
+        streamSid,
+      });
+
       reporters
         ?.sendReports?.(
           core.getReportCtx(durationSec, { metricResponses, metricCancels }),
@@ -672,7 +735,9 @@ export function attachRealtimeBridge({
         });
     });
 
-    twilioWs.on("error", () => {
+    twilioWs.on("error", (e) => {
+      console.log("[bridge] twilio websocket error", e?.message || e);
+
       reporters
         ?.sendReports?.(
           core.getReportCtx(durationSec, { metricResponses, metricCancels }),
