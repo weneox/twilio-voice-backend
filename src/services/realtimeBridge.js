@@ -8,13 +8,8 @@ import {
   buildContactReply,
   getGreeting,
 } from "./realtimeBridge.core.js";
-
-function sendTwilioMedia(twilioWs, streamSid, base64Payload) {
-  if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) return;
-  if (!streamSid) return;
-  if (!base64Payload) return;
-  twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: base64Payload } }));
-}
+import { getTenantVoiceConfig } from "./tenantConfig.js";
+import { s, sendTwilioMedia, getBridgeEnv } from "./bridge/shared.js";
 
 export function attachRealtimeBridge({
   wss,
@@ -27,18 +22,21 @@ export function attachRealtimeBridge({
   REALTIME_VOICE,
   RECONNECT_MAX,
 }) {
-  const RESPONSE_MODALITIES = ["audio", "text"];
-
-  const MIN_TRANSCRIPT_CHARS = Math.max(6, Number(process.env.MIN_TRANSCRIPT_CHARS || "7") || 7);
-  const MIN_SPEECH_CHUNKS = Math.max(10, Number(process.env.MIN_SPEECH_CHUNKS || "14") || 14);
-  const ASSISTANT_COOLDOWN_MS = Math.max(1200, Number(process.env.ASSISTANT_COOLDOWN_MS || "1600") || 1600);
-  const MISHEARD_COOLDOWN_MS = Math.max(2500, Number(process.env.MISHEARD_COOLDOWN_MS || "6500") || 6500);
-  const ECHO_GUARD_MS = Math.max(0, Number(process.env.ECHO_GUARD_MS || "900") || 900);
-  const AUDIO_BUFFER_MAX = Math.max(90, Number(process.env.TWILIO_AUDIO_BUFFER_MAX || "260") || 260);
-  const SILENCE_MS = Math.max(1600, Number(process.env.SILENCE_FALLBACK_MS || "2600") || 2600);
-  const GREETING_PROTECT_MS = Math.max(1800, Number(process.env.GREETING_PROTECT_MS || "3200") || 3200);
-  const WATCHDOG_MS = Math.max(6500, Number(process.env.PENDING_WATCHDOG_MS || "9500") || 9500);
-  const RESPOND_AFTER_STOP_DELAY_MS = Math.max(0, Number(process.env.RESPOND_AFTER_STOP_DELAY_MS || "120") || 120);
+  const {
+    RESPONSE_MODALITIES,
+    MIN_TRANSCRIPT_CHARS,
+    MIN_SPEECH_CHUNKS,
+    ASSISTANT_COOLDOWN_MS,
+    MISHEARD_COOLDOWN_MS,
+    ECHO_GUARD_MS,
+    AUDIO_BUFFER_MAX,
+    SILENCE_MS,
+    GREETING_PROTECT_MS,
+    WATCHDOG_MS,
+    RESPOND_AFTER_STOP_DELAY_MS,
+    VAD_SILENCE_MS,
+    VAD_PREFIX_MS,
+  } = getBridgeEnv();
 
   function dlog(...args) {
     if (!DEBUG_REALTIME) return;
@@ -49,6 +47,9 @@ export function attachRealtimeBridge({
     let streamSid = null;
     let callSid = null;
     let fromNumber = null;
+    let toNumber = null;
+    let tenantKey = null;
+    let tenantConfig = null;
 
     let openaiWs = null;
     let openaiSessionReady = false;
@@ -181,6 +182,33 @@ export function attachRealtimeBridge({
       }
     }
 
+    function currentGreeting() {
+      const langForGreeting = "az";
+      const fromTenant =
+        tenantConfig?.greeting?.[langForGreeting] ||
+        tenantConfig?.greeting?.az ||
+        "";
+
+      return fromTenant || getGreeting(langForGreeting, tenantConfig);
+    }
+
+    function currentInstructions() {
+      const extra = s(tenantConfig?.realtime?.instructions);
+      const businessContext = s(tenantConfig?.businessContext);
+
+      let base = buildStrictInstructions(tenantConfig);
+
+      if (businessContext) {
+        base += `\nTenant business context: ${businessContext}`;
+      }
+
+      if (extra) {
+        base += `\nTenant extra instructions:\n${extra}`;
+      }
+
+      return base;
+    }
+
     function sendResponse(instructions, { temperature = 0.6, maxTokens = 140 } = {}) {
       if (!canSendToOpenAI()) return false;
       if (pendingResponse) return false;
@@ -213,6 +241,7 @@ export function attachRealtimeBridge({
       hangupNow: hangupNowFn,
       redirectToTransfer,
       reporters,
+      tenantConfig,
       MIN_TRANSCRIPT_CHARS,
       MIN_SPEECH_CHUNKS,
       ASSISTANT_COOLDOWN_MS,
@@ -274,11 +303,7 @@ export function attachRealtimeBridge({
       setPending(true);
       metricResponses += 1;
 
-      const langForGreeting = "az";
-      const greeting =
-        typeof getGreeting === "function"
-          ? getGreeting(langForGreeting)
-          : "Salam, mən NEOX şirkətinin virtual asistentiyəm. Sizə necə kömək edə bilərəm?";
+      const greeting = currentGreeting();
 
       try {
         openaiWs.send(
@@ -325,7 +350,6 @@ export function attachRealtimeBridge({
       const t = String(lastFinalTranscript || "").trim();
 
       respondedTurnId = turnId;
-
       flushAudioQueueToOpenAI();
 
       if (t) {
@@ -378,8 +402,14 @@ export function attachRealtimeBridge({
       reconnectAttempts += 1;
       openaiSessionReady = false;
 
-      openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`, {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" },
+      const model = s(tenantConfig?.realtime?.model) || REALTIME_MODEL;
+      const voice = s(tenantConfig?.realtime?.voice) || REALTIME_VOICE;
+
+      openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "OpenAI-Beta": "realtime=v1",
+        },
       });
 
       openaiWs.on("open", () => {
@@ -388,14 +418,14 @@ export function attachRealtimeBridge({
             JSON.stringify({
               type: "session.update",
               session: {
-                voice: REALTIME_VOICE,
-                instructions: buildStrictInstructions(),
+                voice,
+                instructions: currentInstructions(),
                 input_audio_format: "g711_ulaw",
                 output_audio_format: "g711_ulaw",
                 turn_detection: {
                   type: "server_vad",
-                  silence_duration_ms: Math.max(900, Number(process.env.VAD_SILENCE_MS || "1200") || 1200),
-                  prefix_padding_ms: Math.max(240, Number(process.env.VAD_PREFIX_MS || "380") || 380),
+                  silence_duration_ms: VAD_SILENCE_MS,
+                  prefix_padding_ms: VAD_PREFIX_MS,
                 },
                 input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
               },
@@ -496,7 +526,7 @@ export function attachRealtimeBridge({
             const ok = await redirectToTransfer();
             if (!ok) {
               const isAzCaller = callerLikelyAZ(fromNumber);
-              const contact = buildContactReply(core.state.lastLang || "az", isAzCaller);
+              const contact = buildContactReply(core.state.lastLang || "az", isAzCaller, tenantConfig);
               sendResponse(
                 `Say this in user's language as ONE sentence: "Operatora yönləndirmə mümkün olmadı. ${contact}" Then stop.`,
                 { temperature: 0.6, maxTokens: 120 }
@@ -524,6 +554,7 @@ export function attachRealtimeBridge({
           }, wait);
           return;
         }
+
         closeBoth();
       });
 
@@ -536,7 +567,7 @@ export function attachRealtimeBridge({
       });
     }
 
-    twilioWs.on("message", (buf) => {
+    twilioWs.on("message", async (buf) => {
       const msg = safeJsonParse(buf.toString("utf8"));
       if (!msg) return;
 
@@ -544,6 +575,18 @@ export function attachRealtimeBridge({
         streamSid = msg.start?.streamSid || msg.streamSid || null;
         callSid = msg.start?.callSid || null;
         fromNumber = msg.start?.customParameters?.From || msg.start?.from || null;
+        toNumber = msg.start?.customParameters?.To || null;
+        tenantKey = msg.start?.customParameters?.TenantKey || null;
+
+        tenantConfig = await getTenantVoiceConfig({
+          tenant: {
+            tenantKey,
+            toNumber,
+            matchedBy: tenantKey ? "tenantKey" : "toNumber",
+          },
+        });
+
+        core.setTenantConfig(tenantConfig);
 
         setPending(false);
         assistantSpeaking = false;
@@ -572,7 +615,7 @@ export function attachRealtimeBridge({
 
         reconnectAttempts = 0;
 
-        core.resetForNewCall({ callSid, fromNumber });
+        core.resetForNewCall({ callSid, fromNumber, tenantConfig });
 
         if (!OPENAI_API_KEY) {
           try {
@@ -609,14 +652,20 @@ export function attachRealtimeBridge({
 
       if (msg.event === "stop") {
         reporters
-          ?.sendReports?.(core.getReportCtx(durationSec, { metricResponses, metricCancels }), { status: "completed" })
+          ?.sendReports?.(
+            core.getReportCtx(durationSec, { metricResponses, metricCancels }),
+            { status: "completed" }
+          )
           .finally(() => closeBoth());
       }
     });
 
     twilioWs.on("close", () => {
       reporters
-        ?.sendReports?.(core.getReportCtx(durationSec, { metricResponses, metricCancels }), { status: "completed" })
+        ?.sendReports?.(
+          core.getReportCtx(durationSec, { metricResponses, metricCancels }),
+          { status: "completed" }
+        )
         .finally(() => {
           closeOpenAI();
           clearTimers();
@@ -625,7 +674,10 @@ export function attachRealtimeBridge({
 
     twilioWs.on("error", () => {
       reporters
-        ?.sendReports?.(core.getReportCtx(durationSec, { metricResponses, metricCancels }), { status: "completed" })
+        ?.sendReports?.(
+          core.getReportCtx(durationSec, { metricResponses, metricCancels }),
+          { status: "completed" }
+        )
         .finally(() => {
           closeOpenAI();
           clearTimers();

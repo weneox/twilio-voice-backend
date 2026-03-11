@@ -1,9 +1,15 @@
 import express from "express";
 import twilio from "twilio";
 import { cfg } from "../config.js";
+import { resolveTenantFromRequest } from "../services/tenantResolver.js";
+import { getTenantVoiceConfig } from "../services/tenantConfig.js";
+
+function s(v, d = "") {
+  return String(v ?? d).trim();
+}
 
 function getBaseUrlFromReq(req) {
-  const envBase = String(cfg.PUBLIC_BASE_URL || "").trim();
+  const envBase = s(cfg.PUBLIC_BASE_URL);
   if (envBase) return envBase.replace(/\/+$/, "");
 
   const proto = (req.headers["x-forwarded-proto"] || req.protocol || "https")
@@ -40,6 +46,50 @@ function validateTwilioSignature(req) {
 function requireTwilioSignature(req, res, next) {
   if (validateTwilioSignature(req)) return next();
   return res.status(403).type("text/plain").send("Forbidden");
+}
+
+function createVoiceResponseXml({ wsUrl, from, to, tenantKey }) {
+  const vr = new twilio.twiml.VoiceResponse();
+  const connect = vr.connect();
+
+  const stream = connect.stream({ url: wsUrl });
+
+  stream.parameter({
+    name: "From",
+    value: s(from),
+  });
+
+  stream.parameter({
+    name: "To",
+    value: s(to),
+  });
+
+  stream.parameter({
+    name: "TenantKey",
+    value: s(tenantKey),
+  });
+
+  return vr.toString();
+}
+
+function createTransferResponseXml({ operatorPhone, callerId, transferText, unavailableText }) {
+  const vr = new twilio.twiml.VoiceResponse();
+
+  vr.say({ voice: "alice" }, transferText || "Yaxşı, sizi operatora yönləndirirəm.");
+
+  const dial = vr.dial({
+    callerId: callerId || undefined,
+    timeout: 25,
+  });
+
+  dial.number(operatorPhone);
+
+  vr.say(
+    { voice: "alice" },
+    unavailableText || "Təəssüf ki, operator hazırda cavab vermir."
+  );
+
+  return vr.toString();
 }
 
 export function twilioRouter() {
@@ -81,7 +131,7 @@ export function twilioRouter() {
     const VoiceGrant = AccessToken.VoiceGrant;
 
     const identity =
-      String(req.body?.identity || req.query?.identity || "").trim() ||
+      s(req.body?.identity || req.query?.identity) ||
       `browser-${Math.random().toString(16).slice(2)}-${Date.now().toString(36)}`;
 
     const token = new AccessToken(
@@ -106,39 +156,70 @@ export function twilioRouter() {
   });
 
   r.post("/twilio/voice", requireTwilioSignature, async (req, res) => {
-    const baseUrl = getBaseUrlFromReq(req);
-    const wsUrl = `${toWsUrl(baseUrl)}/twilio/stream`;
+    try {
+      const tenant = await resolveTenantFromRequest(req);
+      const tenantConfig = await getTenantVoiceConfig({ tenant });
 
-    const vr = new twilio.twiml.VoiceResponse();
-    const connect = vr.connect();
+      const baseUrl = getBaseUrlFromReq(req);
+      const wsUrl = `${toWsUrl(baseUrl)}/twilio/stream`;
 
-    const stream = connect.stream({
-      url: wsUrl,
-    });
+      const from = s(req.body?.From || req.query?.From);
+      const to = s(req.body?.To || req.query?.To || req.body?.Called || req.query?.Called);
+      const tenantKey = s(
+        tenantConfig?.tenantKey || tenant?.tenantKey || cfg.DEFAULT_TENANT_KEY
+      );
 
-    stream.parameter({
-      name: "From",
-      value: String(req.body?.From || req.query?.From || ""),
-    });
+      const xml = createVoiceResponseXml({
+        wsUrl,
+        from,
+        to,
+        tenantKey,
+      });
 
-    res.type("text/xml").send(vr.toString());
+      res.type("text/xml").send(xml);
+    } catch (err) {
+      console.error("[twilio/voice] error:", err);
+      return res.status(500).json({
+        ok: false,
+        error: "voice_route_failed",
+      });
+    }
   });
 
-  r.post("/twilio/transfer", requireTwilioSignature, (_req, res) => {
-    const vr = new twilio.twiml.VoiceResponse();
+  r.post("/twilio/transfer", requireTwilioSignature, async (req, res) => {
+    try {
+      const tenant = await resolveTenantFromRequest(req);
+      const tenantConfig = await getTenantVoiceConfig({ tenant });
 
-    vr.say({ voice: "alice" }, "Yaxşı, sizi operatora yönləndirirəm.");
+      const operatorPhone =
+        s(tenantConfig?.operator?.phone) || s(cfg.OPERATOR_PHONE, "+994518005577");
 
-    const dial = vr.dial({
-      callerId: cfg.TWILIO_CALLER_ID || undefined,
-      timeout: 25,
-    });
+      const callerId =
+        s(tenantConfig?.operator?.callerId) || s(cfg.TWILIO_CALLER_ID);
 
-    dial.number(cfg.OPERATOR_PHONE || "+994518005577");
+      const transferText =
+        s(tenantConfig?.texts?.transfer_ack?.az) ||
+        "Yaxşı, sizi operatora yönləndirirəm.";
 
-    vr.say({ voice: "alice" }, "Təəssüf ki, operator hazırda cavab vermir.");
+      const unavailableText =
+        s(tenantConfig?.texts?.transfer_unavailable?.az) ||
+        "Təəssüf ki, operator hazırda cavab vermir.";
 
-    res.type("text/xml").send(vr.toString());
+      const xml = createTransferResponseXml({
+        operatorPhone,
+        callerId,
+        transferText,
+        unavailableText,
+      });
+
+      res.type("text/xml").send(xml);
+    } catch (err) {
+      console.error("[twilio/transfer] error:", err);
+      return res.status(500).json({
+        ok: false,
+        error: "transfer_route_failed",
+      });
+    }
   });
 
   r.post("/twilio/voice/fallback", (_req, res) => {

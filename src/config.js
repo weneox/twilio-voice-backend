@@ -37,6 +37,7 @@ export const cfg = {
 
   AIHQ_BASE_URL: s(process.env.AIHQ_BASE_URL).replace(/\/+$/, ""),
   AIHQ_INTERNAL_TOKEN: s(process.env.AIHQ_INTERNAL_TOKEN),
+  DEFAULT_TENANT_KEY: s(process.env.DEFAULT_TENANT_KEY, "default"),
 
   OPERATOR_PHONE: s(process.env.OPERATOR_PHONE, "+994518005577"),
   TWILIO_CALLER_ID: s(process.env.TWILIO_CALLER_ID),
