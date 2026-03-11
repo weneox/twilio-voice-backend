@@ -15,6 +15,10 @@ function b(v, d = false) {
   return d;
 }
 
+const DEFAULT_OPERATOR_PHONE = s(
+  process.env.OPERATOR_PHONE || process.env.DEFAULT_OPERATOR_PHONE
+);
+
 export const cfg = {
   PORT: n(process.env.PORT, 8081),
   APP_ENV: s(process.env.APP_ENV, "development"),
@@ -22,7 +26,10 @@ export const cfg = {
   ENABLE_HSTS: b(process.env.ENABLE_HSTS, false),
 
   OPENAI_API_KEY: s(process.env.OPENAI_API_KEY),
-  OPENAI_REALTIME_MODEL: s(process.env.OPENAI_REALTIME_MODEL, "gpt-4o-realtime-preview"),
+  OPENAI_REALTIME_MODEL: s(
+    process.env.OPENAI_REALTIME_MODEL,
+    "gpt-4o-realtime-preview"
+  ),
   OPENAI_REALTIME_VOICE: s(process.env.OPENAI_REALTIME_VOICE, "alloy"),
   OPENAI_REALTIME_INSTRUCTIONS: s(process.env.OPENAI_REALTIME_INSTRUCTIONS),
   OPENAI_REALTIME_RECONNECT_MAX: Math.max(
@@ -47,7 +54,10 @@ export const cfg = {
 
   // system-level fallback only
   DEFAULT_TRANSFER_MODE: s(process.env.DEFAULT_TRANSFER_MODE, "manual"),
-  DEFAULT_OPERATOR_PHONE: s(process.env.DEFAULT_OPERATOR_PHONE),
+
+  // keep both names for compatibility
+  DEFAULT_OPERATOR_PHONE,
+  OPERATOR_PHONE: DEFAULT_OPERATOR_PHONE,
 
   DEBUG_REALTIME: b(process.env.DEBUG_REALTIME, false),
 };

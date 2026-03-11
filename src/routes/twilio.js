@@ -5,7 +5,6 @@ import { resolveTenantFromRequest } from "../services/tenantResolver.js";
 import { getTenantVoiceConfig } from "../services/tenantConfig.js";
 import {
   contactUnavailableReply,
-  goodbyeReplyFormalHangup,
   pickLang,
   makeI18n,
 } from "../services/voice/i18n.js";
@@ -218,6 +217,18 @@ function buildDepartmentTransferAck(lang, tenantConfig, departmentKey = "") {
   return `Yaxşı, sizi ${label} komandası ilə əlaqələndirirəm.`;
 }
 
+function buildFallbackUnavailableReply(lang) {
+  const L = s(lang, "en").toLowerCase();
+
+  if (L === "ru") return "Извините, сервис сейчас временно недоступен.";
+  if (L === "tr") return "Üzgünüm, hizmet şu anda geçici olarak kullanılamıyor.";
+  if (L === "en") return "Sorry, the service is temporarily unavailable right now.";
+  if (L === "es") return "Lo siento, el servicio no está disponible temporalmente en este momento.";
+  if (L === "de") return "Entschuldigung, der Dienst ist im Moment vorübergehend nicht verfügbar.";
+  if (L === "fr") return "Désolé, le service est temporairement indisponible pour le moment.";
+  return "Bağışlayın, xidmət hazırda müvəqqəti olaraq əlçatan deyil.";
+}
+
 export function twilioRouter() {
   const r = express.Router();
 
@@ -329,7 +340,7 @@ export function twilioRouter() {
       const operatorPhone =
         s(dept?.phone) ||
         s(tenantConfig?.operator?.phone) ||
-        s(cfg.DEFAULT_OPERATOR_PHONE);
+        s(cfg.OPERATOR_PHONE);
 
       const callerId =
         s(dept?.callerId) ||
@@ -366,9 +377,7 @@ export function twilioRouter() {
       const tenant = await resolveTenantFromRequest(req).catch(() => null);
       const tenantConfig = await getTenantVoiceConfig({ tenant }).catch(() => null);
       const lang = detectPreferredLang(req, tenantConfig);
-      const text =
-        goodbyeReplyFormalHangup(lang, tenantConfig) ||
-        "The service is temporarily unavailable.";
+      const text = buildFallbackUnavailableReply(lang);
 
       return res.type("text/xml").send(createSimpleSayXml(text));
     } catch (err) {
