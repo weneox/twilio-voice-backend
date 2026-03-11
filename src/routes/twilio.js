@@ -3,9 +3,19 @@ import twilio from "twilio";
 import { cfg } from "../config.js";
 import { resolveTenantFromRequest } from "../services/tenantResolver.js";
 import { getTenantVoiceConfig } from "../services/tenantConfig.js";
+import {
+  contactUnavailableReply,
+  goodbyeReplyFormalHangup,
+  pickLang,
+  makeI18n,
+} from "../services/voice/i18n.js";
 
 function s(v, d = "") {
   return String(v ?? d).trim();
+}
+
+function isObj(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
 function getBaseUrlFromReq(req) {
@@ -51,7 +61,6 @@ function requireTwilioSignature(req, res, next) {
 function createVoiceResponseXml({ wsUrl, from, to, tenantKey }) {
   const vr = new twilio.twiml.VoiceResponse();
   const connect = vr.connect();
-
   const stream = connect.stream({ url: wsUrl });
 
   stream.parameter({
@@ -72,24 +81,141 @@ function createVoiceResponseXml({ wsUrl, from, to, tenantKey }) {
   return vr.toString();
 }
 
-function createTransferResponseXml({ operatorPhone, callerId, transferText, unavailableText }) {
+function createTransferResponseXml({
+  operatorPhone,
+  callerId,
+  transferText,
+  unavailableText,
+}) {
   const vr = new twilio.twiml.VoiceResponse();
 
-  vr.say({ voice: "alice" }, transferText || "Yaxşı, sizi operatora yönləndirirəm.");
+  if (!s(operatorPhone)) {
+    vr.say({ voice: "alice" }, unavailableText || "Operator is not available right now.");
+    return vr.toString();
+  }
+
+  vr.say({ voice: "alice" }, transferText || "Okay, I will connect you now.");
 
   const dial = vr.dial({
-    callerId: callerId || undefined,
+    callerId: s(callerId) || undefined,
     timeout: 25,
   });
 
   dial.number(operatorPhone);
 
-  vr.say(
-    { voice: "alice" },
-    unavailableText || "Təəssüf ki, operator hazırda cavab vermir."
-  );
+  vr.say({ voice: "alice" }, unavailableText || "Operator is not available right now.");
 
   return vr.toString();
+}
+
+function createSimpleSayXml(text) {
+  const vr = new twilio.twiml.VoiceResponse();
+  vr.say({ voice: "alice" }, s(text, "The service is temporarily unavailable."));
+  return vr.toString();
+}
+
+function detectPreferredLang(req, tenantConfig) {
+  const explicit =
+    s(req.body?.lang) ||
+    s(req.query?.lang) ||
+    s(req.body?.Language) ||
+    s(req.query?.Language);
+
+  if (explicit) {
+    const dict = makeI18n(tenantConfig);
+    return pickLang(explicit, dict);
+  }
+
+  return s(
+    tenantConfig?.voiceProfile?.defaultLanguage || tenantConfig?.defaultLanguage,
+    "en"
+  ).toLowerCase();
+}
+
+function getOperatorRouting(tenantConfig = null) {
+  const routing = isObj(tenantConfig?.operatorRouting) ? tenantConfig.operatorRouting : {};
+  const departments = isObj(routing.departments) ? routing.departments : {};
+
+  return {
+    mode: s(
+      routing.mode ||
+        tenantConfig?.voiceProfile?.transferMode ||
+        tenantConfig?.operator?.mode,
+      "manual"
+    ).toLowerCase(),
+    defaultDepartment: s(routing.defaultDepartment).toLowerCase(),
+    departments,
+  };
+}
+
+function getDepartmentEntry(tenantConfig, departmentKey) {
+  const routing = getOperatorRouting(tenantConfig);
+  const key = s(departmentKey).toLowerCase();
+  if (!key) return null;
+
+  const item = routing.departments?.[key];
+  return isObj(item) ? item : null;
+}
+
+function resolveDepartmentForTransfer(tenantConfig, requestedDepartment = "") {
+  const routing = getOperatorRouting(tenantConfig);
+  const requested = s(requestedDepartment).toLowerCase();
+
+  if (requested) {
+    const item = getDepartmentEntry(tenantConfig, requested);
+    if (item && String(item.enabled ?? "true").trim() !== "false" && s(item.phone)) {
+      return requested;
+    }
+
+    const fb = s(item?.fallbackDepartment).toLowerCase();
+    if (fb) {
+      const fbItem = getDepartmentEntry(tenantConfig, fb);
+      if (fbItem && String(fbItem.enabled ?? "true").trim() !== "false" && s(fbItem.phone)) {
+        return fb;
+      }
+    }
+  }
+
+  const def = s(routing.defaultDepartment).toLowerCase();
+  if (def) {
+    const defItem = getDepartmentEntry(tenantConfig, def);
+    if (defItem && String(defItem.enabled ?? "true").trim() !== "false" && s(defItem.phone)) {
+      return def;
+    }
+  }
+
+  for (const [key, value] of Object.entries(routing.departments || {})) {
+    if (!isObj(value)) continue;
+    if (String(value.enabled ?? "true").trim() === "false") continue;
+    if (s(value.phone)) return s(key).toLowerCase();
+  }
+
+  return "";
+}
+
+function getRequestedDepartment(req) {
+  return s(
+    req.body?.department ||
+      req.body?.Department ||
+      req.query?.department ||
+      req.query?.Department ||
+      req.body?.targetDepartment ||
+      req.query?.targetDepartment
+  ).toLowerCase();
+}
+
+function buildDepartmentTransferAck(lang, tenantConfig, departmentKey = "") {
+  const dept = getDepartmentEntry(tenantConfig, departmentKey);
+  const label = s(dept?.label || departmentKey || "operator");
+  const L = s(lang, "en").toLowerCase();
+
+  if (L === "ru") return `Хорошо, соединяю вас с отделом ${label}.`;
+  if (L === "tr") return `Tamam, sizi ${label} bölümüne bağlıyorum.`;
+  if (L === "en") return `Okay, I will connect you to the ${label} team.`;
+  if (L === "es") return `De acuerdo, te conecto con el equipo de ${label}.`;
+  if (L === "de") return `Okay, ich verbinde Sie mit dem ${label}-Team.`;
+  if (L === "fr") return `D’accord, je vous mets en relation avec l’équipe ${label}.`;
+  return `Yaxşı, sizi ${label} komandası ilə əlaqələndirirəm.`;
 }
 
 export function twilioRouter() {
@@ -166,7 +292,7 @@ export function twilioRouter() {
       const from = s(req.body?.From || req.query?.From);
       const to = s(req.body?.To || req.query?.To || req.body?.Called || req.query?.Called);
       const tenantKey = s(
-        tenantConfig?.tenantKey || tenant?.tenantKey || cfg.DEFAULT_TENANT_KEY
+        tenantConfig?.tenantKey || tenant?.tenantKey || cfg.DEFAULT_TENANT_KEY || "default"
       );
 
       const xml = createVoiceResponseXml({
@@ -176,7 +302,7 @@ export function twilioRouter() {
         tenantKey,
       });
 
-      res.type("text/xml").send(xml);
+      return res.type("text/xml").send(xml);
     } catch (err) {
       console.error("[twilio/voice] error:", err);
       return res.status(500).json({
@@ -190,20 +316,33 @@ export function twilioRouter() {
     try {
       const tenant = await resolveTenantFromRequest(req);
       const tenantConfig = await getTenantVoiceConfig({ tenant });
+      const lang = detectPreferredLang(req, tenantConfig);
+
+      const requestedDepartment = getRequestedDepartment(req);
+      const resolvedDepartment = resolveDepartmentForTransfer(
+        tenantConfig,
+        requestedDepartment
+      );
+
+      const dept = getDepartmentEntry(tenantConfig, resolvedDepartment);
 
       const operatorPhone =
-        s(tenantConfig?.operator?.phone) || s(cfg.OPERATOR_PHONE, "+994518005577");
+        s(dept?.phone) ||
+        s(tenantConfig?.operator?.phone) ||
+        s(cfg.DEFAULT_OPERATOR_PHONE);
 
       const callerId =
-        s(tenantConfig?.operator?.callerId) || s(cfg.TWILIO_CALLER_ID);
+        s(dept?.callerId) ||
+        s(tenantConfig?.operator?.callerId) ||
+        s(cfg.TWILIO_CALLER_ID);
 
-      const transferText =
-        s(tenantConfig?.texts?.transfer_ack?.az) ||
-        "Yaxşı, sizi operatora yönləndirirəm.";
+      const transferText = buildDepartmentTransferAck(
+        lang,
+        tenantConfig,
+        resolvedDepartment
+      );
 
-      const unavailableText =
-        s(tenantConfig?.texts?.transfer_unavailable?.az) ||
-        "Təəssüf ki, operator hazırda cavab vermir.";
+      const unavailableText = contactUnavailableReply(lang, tenantConfig);
 
       const xml = createTransferResponseXml({
         operatorPhone,
@@ -212,7 +351,7 @@ export function twilioRouter() {
         unavailableText,
       });
 
-      res.type("text/xml").send(xml);
+      return res.type("text/xml").send(xml);
     } catch (err) {
       console.error("[twilio/transfer] error:", err);
       return res.status(500).json({
@@ -222,10 +361,22 @@ export function twilioRouter() {
     }
   });
 
-  r.post("/twilio/voice/fallback", (_req, res) => {
-    const vr = new twilio.twiml.VoiceResponse();
-    vr.say("Sorry, the realtime service is unavailable right now.");
-    res.type("text/xml").send(vr.toString());
+  r.post("/twilio/voice/fallback", async (req, res) => {
+    try {
+      const tenant = await resolveTenantFromRequest(req).catch(() => null);
+      const tenantConfig = await getTenantVoiceConfig({ tenant }).catch(() => null);
+      const lang = detectPreferredLang(req, tenantConfig);
+      const text =
+        goodbyeReplyFormalHangup(lang, tenantConfig) ||
+        "The service is temporarily unavailable.";
+
+      return res.type("text/xml").send(createSimpleSayXml(text));
+    } catch (err) {
+      console.error("[twilio/voice/fallback] error:", err);
+      return res
+        .type("text/xml")
+        .send(createSimpleSayXml("The service is temporarily unavailable."));
+    }
   });
 
   return r;

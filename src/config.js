@@ -25,7 +25,10 @@ export const cfg = {
   OPENAI_REALTIME_MODEL: s(process.env.OPENAI_REALTIME_MODEL, "gpt-4o-realtime-preview"),
   OPENAI_REALTIME_VOICE: s(process.env.OPENAI_REALTIME_VOICE, "alloy"),
   OPENAI_REALTIME_INSTRUCTIONS: s(process.env.OPENAI_REALTIME_INSTRUCTIONS),
-  OPENAI_REALTIME_RECONNECT_MAX: Math.max(0, n(process.env.OPENAI_REALTIME_RECONNECT_MAX, 2)),
+  OPENAI_REALTIME_RECONNECT_MAX: Math.max(
+    0,
+    n(process.env.OPENAI_REALTIME_RECONNECT_MAX, 2)
+  ),
 
   PUBLIC_BASE_URL: s(process.env.PUBLIC_BASE_URL).replace(/\/+$/, ""),
 
@@ -34,13 +37,17 @@ export const cfg = {
   TWILIO_API_SECRET: s(process.env.TWILIO_API_SECRET),
   TWILIO_TWIML_APP_SID: s(process.env.TWILIO_TWIML_APP_SID),
   TWILIO_AUTH_TOKEN: s(process.env.TWILIO_AUTH_TOKEN),
+  TWILIO_CALLER_ID: s(process.env.TWILIO_CALLER_ID),
 
   AIHQ_BASE_URL: s(process.env.AIHQ_BASE_URL).replace(/\/+$/, ""),
   AIHQ_INTERNAL_TOKEN: s(process.env.AIHQ_INTERNAL_TOKEN),
-  DEFAULT_TENANT_KEY: s(process.env.DEFAULT_TENANT_KEY, "default"),
 
-  OPERATOR_PHONE: s(process.env.OPERATOR_PHONE, "+994518005577"),
-  TWILIO_CALLER_ID: s(process.env.TWILIO_CALLER_ID),
+  DEFAULT_TENANT_KEY: s(process.env.DEFAULT_TENANT_KEY, "default"),
+  DEFAULT_LANGUAGE: s(process.env.DEFAULT_LANGUAGE, "en"),
+
+  // system-level fallback only
+  DEFAULT_TRANSFER_MODE: s(process.env.DEFAULT_TRANSFER_MODE, "manual"),
+  DEFAULT_OPERATOR_PHONE: s(process.env.DEFAULT_OPERATOR_PHONE),
 
   DEBUG_REALTIME: b(process.env.DEBUG_REALTIME, false),
 };

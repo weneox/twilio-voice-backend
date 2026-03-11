@@ -10,13 +10,13 @@ import {
 import { norm } from "./shared.js";
 
 const WEEKDAYS = [
-  { az: ["bazar ertəsi", "bazarertəsi", "bazar ertesi", "monday", "pazartesi", "понедель", "lunes", "montag", "lundi"], out: "Bazar ertəsi" },
-  { az: ["çərşənbə axşamı", "cersenbe axsami", "çərşənbə axşami", "tuesday", "sali", "вторник", "martes", "dienstag", "mardi"], out: "Çərşənbə axşamı" },
-  { az: ["çərşənbə", "cersenbe", "wednesday", "çarşamba", "среда", "miércoles", "mittwoch", "mercredi"], out: "Çərşənbə" },
-  { az: ["cümə axşamı", "cume axsami", "cümə axşami", "thursday", "perşembe", "четверг", "jueves", "donnerstag", "jeudi"], out: "Cümə axşamı" },
-  { az: ["cümə", "cume", "friday", "cuma", "пятниц", "viernes", "freitag", "vendredi"], out: "Cümə" },
-  { az: ["şənbə", "senbe", "saturday", "cumartesi", "суббот", "sábado", "samstag", "samedi"], out: "Şənbə" },
-  { az: ["bazar", "sunday", "pazar", "воскрес", "domingo", "sonntag", "dimanche"], out: "Bazar" },
+  { keys: ["bazar ertəsi", "bazarertəsi", "bazar ertesi", "monday", "pazartesi", "понедель", "lunes", "montag", "lundi"], out: "Monday" },
+  { keys: ["çərşənbə axşamı", "cersenbe axsami", "çərşənbə axşami", "tuesday", "sali", "вторник", "martes", "dienstag", "mardi"], out: "Tuesday" },
+  { keys: ["çərşənbə", "cersenbe", "wednesday", "çarşamba", "среда", "miércoles", "mittwoch", "mercredi"], out: "Wednesday" },
+  { keys: ["cümə axşamı", "cume axsami", "cümə axşami", "thursday", "perşembe", "четверг", "jueves", "donnerstag", "jeudi"], out: "Thursday" },
+  { keys: ["cümə", "cume", "friday", "cuma", "пятниц", "viernes", "freitag", "vendredi"], out: "Friday" },
+  { keys: ["şənbə", "senbe", "saturday", "cumartesi", "суббот", "sábado", "samstag", "samedi"], out: "Saturday" },
+  { keys: ["bazar", "sunday", "pazar", "воскрес", "domingo", "sonntag", "dimanche"], out: "Sunday" },
 ];
 
 function extractTimeLike(text) {
@@ -44,20 +44,20 @@ function extractTimeLike(text) {
   return null;
 }
 
-export function extractMeetingAz(transcripts) {
+export function extractMeetingInfo(transcripts) {
   const list = Array.isArray(transcripts) ? transcripts : [];
   const joined = list.map((x) => String(x?.text || x || "")).join(" | ");
   const low = norm(joined);
 
-  let dayAz = null;
+  let day = null;
   for (const w of WEEKDAYS) {
-    for (const key of w.az) {
+    for (const key of w.keys) {
       if (low.includes(norm(key))) {
-        dayAz = w.out;
+        day = w.out;
         break;
       }
     }
-    if (dayAz) break;
+    if (day) break;
   }
 
   const time = extractTimeLike(joined);
@@ -75,16 +75,19 @@ export function extractMeetingAz(transcripts) {
     low.includes("appointment") ||
     low.includes("booking");
 
-  if (!wantsMeeting && !dayAz && !time) {
-    return { scheduled: false, dayAz: null, time: null, textAz: null };
+  if (!wantsMeeting && !day && !time) {
+    return { scheduled: false, day: null, time: null, text: null };
   }
 
   const parts = [];
-  if (dayAz) parts.push(dayAz);
+  if (day) parts.push(day);
   if (time) parts.push(time);
 
-  const textAz = parts.length ? `Görüş: ${parts.join(" ")}.` : "Görüş: istək var (vaxt dəqiqləşməyib).";
-  return { scheduled: true, dayAz, time, textAz };
+  const text = parts.length
+    ? `Meeting requested: ${parts.join(" ")}.`
+    : "Meeting requested, but time is not yet confirmed.";
+
+  return { scheduled: true, day, time, text };
 }
 
 export function extractPhoneDigits(text) {
@@ -108,38 +111,24 @@ export function extractPhoneDigits(text) {
   return digitsOnly;
 }
 
-export function normalizeAzPhone(digits) {
+export function normalizePhone(digits) {
   const d = String(digits || "").replace(/\D/g, "");
 
-  if (d.length === 10 && d.startsWith("0")) {
-    return {
-      e164: `+994${d.slice(1)}`,
-      pretty: `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6, 8)} ${d.slice(8, 10)}`,
-      confidence: "high",
-    };
-  }
-
-  if (d.length === 12 && d.startsWith("994")) {
-    const local = `0${d.slice(3)}`;
-    return {
-      e164: `+${d}`,
-      pretty: `${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6, 8)} ${local.slice(8, 10)}`,
-      confidence: "high",
-    };
-  }
-
   if (d.length >= 9 && d.length <= 15) {
+    const e164 = d.startsWith("0") ? d : `+${d}`;
     return {
-      e164: d.startsWith("0") ? d : `+${d}`,
+      e164,
       pretty: d,
-      confidence: "low",
+      confidence: d.length >= 10 ? "high" : "low",
     };
   }
 
   return null;
 }
 
-export function summarizeLeadAz({
+export const normalizeAzPhone = normalizePhone;
+
+export function summarizeLead({
   lastLang,
   leadFlag,
   askedOperator,
@@ -153,58 +142,62 @@ export function summarizeLeadAz({
   const t = String(lastFinalTranscript || "");
   let need = null;
 
-  if (looksLikeWebsite(t)) need = "Veb sayt";
-  else if (looksLikeAIAgent(t)) need = "Səsli AI agent";
+  if (looksLikeWebsite(t)) need = "Website";
+  else if (looksLikeAIAgent(t)) need = "Voice AI agent";
   else if (looksLikeChatbot(t)) need = "AI chatbot";
-  else if (looksLikeAutomation(t)) need = "Biznes avtomatlaşdırma/inteqrasiya";
-  else if (looksLikePricing(t)) need = "Qiymət/təklif";
-  else if (looksLikeServicesList(t)) need = "Xidmət / məlumat";
-  else if (looksLikeContactRequest(t)) need = "Əlaqə məlumatı";
-  else need = leadFlag ? "Maraqlanır (lead niyyəti var)" : "Müraciət";
+  else if (looksLikeAutomation(t)) need = "Business automation / integration";
+  else if (looksLikePricing(t)) need = "Pricing / quote";
+  else if (looksLikeServicesList(t)) need = "Service / information";
+  else if (looksLikeContactRequest(t)) need = "Contact details";
+  else need = leadFlag ? "Lead intent detected" : "General inquiry";
 
-  parts.push(`İstək: ${need}.`);
+  parts.push(`Need: ${need}.`);
 
-  const langMapAz = { az: "AZ", tr: "TR", ru: "RU", en: "EN", es: "ES", de: "DE", fr: "FR" };
-  parts.push(`Zəng dili: ${langMapAz[String(lastLang || "az").toLowerCase()] || "AZ"}.`);
+  const langMap = { az: "AZ", tr: "TR", ru: "RU", en: "EN", es: "ES", de: "DE", fr: "FR" };
+  parts.push(`Language: ${langMap[String(lastLang || "en").toLowerCase()] || "EN"}.`);
 
-  parts.push(`Operator istəyi: ${askedOperator ? "bəli" : "xeyr"}.`);
-  parts.push(`Əlaqə soruşdu: ${askedContact ? "bəli" : "xeyr"}.`);
+  parts.push(`Requested operator: ${askedOperator ? "yes" : "no"}.`);
+  parts.push(`Asked for contact: ${askedContact ? "yes" : "no"}.`);
 
-  if (confirmedContact?.name) parts.push(`Ad: ${confirmedContact.name}.`);
-  if (confirmedContact?.phone) parts.push(`Telefon: ${confirmedContact.phone}.`);
+  if (confirmedContact?.name) parts.push(`Name: ${confirmedContact.name}.`);
+  if (confirmedContact?.phone) parts.push(`Phone: ${confirmedContact.phone}.`);
   if (confirmedContact?.email) parts.push(`Email: ${confirmedContact.email}.`);
 
   if (!confirmedContact?.name && !confirmedContact?.phone && !confirmedContact?.email) {
-    parts.push("Əlaqə məlumatı: təsdiqlənməyib (yazılmadı).");
+    parts.push("Confirmed contact: none.");
   }
 
-  const meeting = extractMeetingAz(transcriptLog || []);
-  if (meeting?.scheduled && meeting?.textAz) parts.push(meeting.textAz);
+  const meeting = extractMeetingInfo(transcriptLog || []);
+  if (meeting?.scheduled && meeting?.text) parts.push(meeting.text);
 
   return parts.join(" ");
 }
 
-export function buildLeadFieldsAz({ lastFinalTranscript, transcriptLog, confirmedContact }) {
+export function buildLeadFields({ lastFinalTranscript, transcriptLog, confirmedContact }) {
   const t = String(lastFinalTranscript || "");
   let service = "";
 
-  if (looksLikeWebsite(t)) service = "Veb sayt";
-  else if (looksLikeAIAgent(t)) service = "Səsli AI agent";
+  if (looksLikeWebsite(t)) service = "Website";
+  else if (looksLikeAIAgent(t)) service = "Voice AI agent";
   else if (looksLikeChatbot(t)) service = "AI chatbot";
-  else if (looksLikeAutomation(t)) service = "Biznes avtomatlaşdırma/inteqrasiya";
-  else if (looksLikePricing(t)) service = "Qiymət/təklif";
-  else if (looksLikeServicesList(t)) service = "Xidmət / məlumat";
-  else if (looksLikeContactRequest(t)) service = "Əlaqə";
+  else if (looksLikeAutomation(t)) service = "Business automation / integration";
+  else if (looksLikePricing(t)) service = "Pricing / quote";
+  else if (looksLikeServicesList(t)) service = "Service / information";
+  else if (looksLikeContactRequest(t)) service = "Contact";
 
-  const meeting = extractMeetingAz(transcriptLog || []);
+  const meeting = extractMeetingInfo(transcriptLog || []);
 
   return {
     service: service || "",
     name: confirmedContact?.name || "",
     phone: confirmedContact?.phone || "",
     email: confirmedContact?.email || "",
-    meetingScheduled: meeting?.scheduled ? "bəli" : "xeyr",
-    meetingAt: meeting?.scheduled ? [meeting.dayAz, meeting.time].filter(Boolean).join(" ") : "",
+    meetingScheduled: meeting?.scheduled ? "yes" : "no",
+    meetingAt: meeting?.scheduled ? [meeting.day, meeting.time].filter(Boolean).join(" ") : "",
     notes: "",
   };
 }
+
+export const extractMeetingAz = extractMeetingInfo;
+export const summarizeLeadAz = summarizeLead;
+export const buildLeadFieldsAz = buildLeadFields;

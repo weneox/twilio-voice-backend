@@ -1,10 +1,14 @@
 // src/services/reporting.js
 // Telegram + Google Sheets (GAS) + n8n + dedup + optional OpenAI lead extraction
 
-function safeJsonParse(s) {
+function s(v, d = "") {
+  return String(v ?? d).trim();
+}
+
+function safeJsonParse(v) {
   try {
-    if (typeof s !== "string") return null;
-    return JSON.parse(s);
+    if (typeof v !== "string") return null;
+    return JSON.parse(v);
   } catch {
     return null;
   }
@@ -12,6 +16,7 @@ function safeJsonParse(s) {
 
 async function postJson(fetchFn, url, payload, extraHeaders = {}) {
   if (!url) return { ok: false, status: 0, text: "missing_url" };
+
   try {
     const json = JSON.stringify(payload || {});
     const resp = await fetchFn(url, {
@@ -49,11 +54,14 @@ async function postJsonWithTimeout(fetchFn, url, payload, extraHeaders = {}, tim
 
 /** Redis/local dedup */
 const LOCAL_DEDUP = new Map();
+
 function localDedupKeySet(key, ttlSec) {
   const now = Date.now();
+
   for (const [k, exp] of LOCAL_DEDUP.entries()) {
     if (exp <= now) LOCAL_DEDUP.delete(k);
   }
+
   if (LOCAL_DEDUP.has(key)) return false;
   LOCAL_DEDUP.set(key, now + ttlSec * 1000);
   return true;
@@ -61,6 +69,7 @@ function localDedupKeySet(key, ttlSec) {
 
 async function dedupOnce(redis, key, ttlSec = 86400) {
   if (!key) return true;
+
   try {
     if (redis) {
       const r = await redis.set(key, "1", "EX", ttlSec, "NX");
@@ -69,28 +78,47 @@ async function dedupOnce(redis, key, ttlSec = 86400) {
   } catch (e) {
     console.log("[dedup] redis set failed", e?.message || e);
   }
+
   return localDedupKeySet(key, ttlSec);
 }
 
 /** Lead extraction helpers */
-function shouldExtractLead({ enabled, OPENAI_API_KEY, leadFlag, askedContact, askedOperator, transcriptLog, minTranscripts }) {
+function shouldExtractLead({
+  enabled,
+  OPENAI_API_KEY,
+  leadFlag,
+  askedContact,
+  askedOperator,
+  transcriptLog,
+  minTranscripts,
+}) {
   if (!enabled) return false;
   if (!OPENAI_API_KEY) return false;
   if (!Array.isArray(transcriptLog) || transcriptLog.length < (minTranscripts || 2)) return false;
-  return leadFlag || askedContact || askedOperator;
+  return !!(leadFlag || askedContact || askedOperator);
 }
 
-async function extractLeadFromTranscripts({ fetchFn, OPENAI_API_KEY, OPENAI_MODEL, transcriptLog, fromNumber, lastLang }) {
+async function extractLeadFromTranscripts({
+  fetchFn,
+  OPENAI_API_KEY,
+  OPENAI_MODEL,
+  transcriptLog,
+  fromNumber,
+  lastLang,
+  companyName,
+}) {
   const joined = transcriptLog
     .slice(-12)
     .map((x) => `- ${String(x.text || "").slice(0, 240)}`)
     .join("\n");
 
+  const tenantName = s(companyName, "the company");
+
   const sys = [
-    "You extract sales lead info from short call transcripts for NEOX company.",
+    `You extract sales lead information from short call transcripts for ${tenantName}.`,
     "Return ONLY strict JSON (no markdown).",
     "If a field is unknown, return null (not empty string).",
-    "Never invent phone/email.",
+    "Never invent phone, email, company, or meeting details.",
     "JSON schema:",
     "{",
     '  "service": {"primary": "website|chatbot|voice_agent|automation|other", "details": string|null},',
@@ -110,12 +138,15 @@ async function extractLeadFromTranscripts({ fetchFn, OPENAI_API_KEY, OPENAI_MODE
     "Extract lead JSON now.",
   ].join("\n");
 
-  const model = (OPENAI_MODEL || "gpt-4.1-mini").trim();
+  const model = s(OPENAI_MODEL, "gpt-4.1-mini");
 
   try {
     const resp = await fetchFn("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json; charset=utf-8" },
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
       body: Buffer.from(
         JSON.stringify({
           model,
@@ -205,6 +236,7 @@ function normalizeExtractedLead(raw) {
 
 /** Telegram / Sheets / n8n payload formatting */
 function buildN8nEventPayload({
+  eventName,
   status,
   callSid,
   fromNumber,
@@ -215,15 +247,19 @@ function buildN8nEventPayload({
   extractedLead,
   transcriptLog,
   confirmedContact,
+  tenantKey,
+  companyName,
 }) {
   return {
-    event: "neox.lead",
+    event: s(eventName, "voice.lead"),
     status,
     createdAt: new Date().toISOString(),
+    tenantKey: s(tenantKey),
+    companyName: s(companyName),
     callSid: callSid || "",
     from: fromNumber || "",
     durationSec: Number(durationSec || 0),
-    lang: lastLang || "az",
+    lang: lastLang || "en",
     metrics: {
       responses: Number(metricResponses || 0),
       cancels: Number(metricCancels || 0),
@@ -231,19 +267,35 @@ function buildN8nEventPayload({
     confirmedContact: confirmedContact || null,
     lead: extractedLead || null,
     transcripts: Array.isArray(transcriptLog)
-      ? transcriptLog.slice(-10).map((x) => ({ ts: x.ts, text: String(x.text || "").slice(0, 400) }))
+      ? transcriptLog.slice(-10).map((x) => ({
+          ts: x.ts,
+          text: String(x.text || "").slice(0, 400),
+        }))
       : [],
   };
 }
 
-function buildSheetsPayload({ extractedLead, callSid, fromNumber, durationSec, lastLang, status, confirmedContact }) {
+function buildSheetsPayload({
+  extractedLead,
+  callSid,
+  fromNumber,
+  durationSec,
+  lastLang,
+  status,
+  confirmedContact,
+  tenantKey,
+  companyName,
+}) {
   const mergedContact = { ...(extractedLead?.contact || {}), ...(confirmedContact || {}) };
+
   return {
+    tenantKey: s(tenantKey),
+    companyName: s(companyName),
     status: status || "completed",
     callSid: callSid || "",
     from: fromNumber || "",
     durationSec: durationSec || 0,
-    lang: lastLang || "az",
+    lang: lastLang || "en",
     service: extractedLead?.service || undefined,
     contact: mergedContact || undefined,
     business: extractedLead?.business || undefined,
@@ -253,13 +305,28 @@ function buildSheetsPayload({ extractedLead, callSid, fromNumber, durationSec, l
   };
 }
 
-function buildTelegramTextSalesReady({ status, callSid, fromNumber, dur, lastLang, metricResponses, metricCancels, extractedLead, transcriptLog, confirmedContact }) {
+function buildTelegramTextSalesReady({
+  status,
+  callSid,
+  fromNumber,
+  dur,
+  lastLang,
+  metricResponses,
+  metricCancels,
+  extractedLead,
+  transcriptLog,
+  confirmedContact,
+  tenantKey,
+  companyName,
+}) {
   const lines = [];
   const score = extractedLead?.leadScore;
   const scoreText = Number.isFinite(Number(score)) ? ` (score ${Number(score)})` : "";
-  const head = status === "in_progress" ? `🟡 Yeni lead (in progress)${scoreText}` : `🟢 Lead tamamlandı${scoreText}`;
+  const head = status === "in_progress" ? `🟡 Lead in progress${scoreText}` : `🟢 Lead completed${scoreText}`;
 
   lines.push(head);
+  if (companyName) lines.push(`company: ${companyName}`);
+  if (tenantKey) lines.push(`tenant: ${tenantKey}`);
   if (callSid) lines.push(`callSid: ${callSid}`);
   if (fromNumber) lines.push(`from: ${fromNumber}`);
   if (lastLang) lines.push(`lang: ${lastLang}`);
@@ -271,7 +338,7 @@ function buildTelegramTextSalesReady({ status, callSid, fromNumber, dur, lastLan
 
   const c = { ...(extractedLead?.contact || {}), ...(confirmedContact || {}) };
   if (c.name) lines.push(`name: ${c.name}`);
-  if (c.company) lines.push(`company: ${c.company}`);
+  if (c.company) lines.push(`company_contact: ${c.company}`);
   if (c.role) lines.push(`role: ${c.role}`);
   if (c.phone) lines.push(`phone: ${c.phone}`);
   if (c.email) lines.push(`email: ${c.email}`);
@@ -295,24 +362,31 @@ function buildTelegramTextSalesReady({ status, callSid, fromNumber, dur, lastLan
   if (Array.isArray(transcriptLog) && transcriptLog.length) {
     lines.push("");
     lines.push("last transcripts:");
-    for (const it of transcriptLog.slice(-6)) lines.push(`- ${String(it.text || "").slice(0, 220)}`);
+    for (const it of transcriptLog.slice(-6)) {
+      lines.push(`- ${String(it.text || "").slice(0, 220)}`);
+    }
   }
 
   return lines.join("\n").slice(0, 3800);
 }
 
-export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL }) {
-  const TELEGRAM_BOT_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const TELEGRAM_CHAT_ID = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+export function createReporters({ fetchFn, redis, OPENAI_API_KEY, OPENAI_MODEL }) {
+  const TELEGRAM_BOT_TOKEN = s(process.env.TELEGRAM_BOT_TOKEN);
+  const TELEGRAM_CHAT_ID = s(process.env.TELEGRAM_CHAT_ID);
 
   async function sendTelegramMessage(text) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
+
     try {
       const resp = await fetchFn(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
         body: Buffer.from(
-          JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: String(text || "").slice(0, 3900), disable_web_page_preview: true }),
+          JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: String(text || "").slice(0, 3900),
+            disable_web_page_preview: true,
+          }),
           "utf8"
         ),
       });
@@ -322,27 +396,32 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
     }
   }
 
-  const GOOGLE_SHEETS_WEBHOOK_URL =
-    String(process.env.GOOGLE_SHEETS_WEBHOOK_URL || "").trim() ||
-    "https://script.google.com/macros/s/AKfycbwlxFqmaFtqXE2v-VXtvtqRM-hzK895xKzZXEuWvTJaHVHn9xRz35eaHxxL751FfO3Kww/exec";
-  const GOOGLE_SHEETS_WEBHOOK_TOKEN = String(process.env.GOOGLE_SHEETS_WEBHOOK_TOKEN || "").trim();
+  const GOOGLE_SHEETS_WEBHOOK_URL = s(process.env.GOOGLE_SHEETS_WEBHOOK_URL);
+  const GOOGLE_SHEETS_WEBHOOK_TOKEN = s(process.env.GOOGLE_SHEETS_WEBHOOK_TOKEN);
 
   async function sendToGoogleSheets(payload) {
     if (!GOOGLE_SHEETS_WEBHOOK_URL) return false;
-    const body = GOOGLE_SHEETS_WEBHOOK_TOKEN ? { token: GOOGLE_SHEETS_WEBHOOK_TOKEN, ...(payload || {}) } : payload || {};
+
+    const body = GOOGLE_SHEETS_WEBHOOK_TOKEN
+      ? { token: GOOGLE_SHEETS_WEBHOOK_TOKEN, ...(payload || {}) }
+      : payload || {};
+
     const r = await postJson(fetchFn, GOOGLE_SHEETS_WEBHOOK_URL, body, {});
     if (!r.ok) console.log("[sheets] webhook failed", r.status, r.text);
     return r.ok;
   }
 
-  const N8N_WEBHOOK_URL = String(process.env.N8N_WEBHOOK_URL || "").trim();
-  const N8N_WEBHOOK_TOKEN = String(process.env.N8N_WEBHOOK_TOKEN || "").trim();
+  const N8N_WEBHOOK_URL = s(process.env.N8N_WEBHOOK_URL);
+  const N8N_WEBHOOK_TOKEN = s(process.env.N8N_WEBHOOK_TOKEN);
+  const N8N_EVENT_NAME = s(process.env.N8N_EVENT_NAME, "voice.lead");
   const N8N_TIMEOUT_MS = Math.max(2500, Number(process.env.N8N_TIMEOUT_MS || "6500") || 6500);
   const N8N_RETRIES = Math.max(0, Number(process.env.N8N_RETRIES || "2") || 2);
-  const N8N_RETRY_BACKOFF_MS = Math.max(250, Number(process.env.N8N_RETRY_BACKOFF_MS || "650") || 650);
+  const N8N_RETRY_BACKOFF_MS =
+    Math.max(250, Number(process.env.N8N_RETRY_BACKOFF_MS || "650") || 650);
 
   async function sendToN8n(payload) {
     if (!N8N_WEBHOOK_URL) return false;
+
     const headers = {};
     if (N8N_WEBHOOK_TOKEN) headers["X-Webhook-Token"] = N8N_WEBHOOK_TOKEN;
 
@@ -359,11 +438,13 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
       console.log("[n8n] webhook failed", r.status, r.text);
       return false;
     }
+
     return false;
   }
 
   const LEAD_EXTRACT_ON_CALL_END = String(process.env.LEAD_EXTRACT_ON_CALL_END || "0") === "1";
-  const LEAD_EXTRACT_MIN_TRANSCRIPTS = Math.max(1, Number(process.env.LEAD_EXTRACT_MIN_TRANSCRIPTS || "2") || 2);
+  const LEAD_EXTRACT_MIN_TRANSCRIPTS =
+    Math.max(1, Number(process.env.LEAD_EXTRACT_MIN_TRANSCRIPTS || "2") || 2);
 
   const flags = {
     telegram: !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID),
@@ -408,12 +489,17 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
         transcriptLog: ctx.transcriptLog,
         fromNumber: ctx.fromNumber,
         lastLang: ctx.lastLang,
+        companyName: ctx.companyName || ctx.tenantConfig?.companyName || "",
       });
       extractedLead = normalizeExtractedLead(raw);
     }
 
+    const tenantKey = s(ctx.tenantKey || ctx.tenantConfig?.tenantKey);
+    const companyName = s(ctx.companyName || ctx.tenantConfig?.companyName);
+
     if (N8N_WEBHOOK_URL) {
       const payload = buildN8nEventPayload({
+        eventName: N8N_EVENT_NAME,
         status,
         callSid: ctx.callSid,
         fromNumber: ctx.fromNumber,
@@ -424,6 +510,8 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
         extractedLead,
         transcriptLog: ctx.transcriptLog,
         confirmedContact: ctx.confirmedContact,
+        tenantKey,
+        companyName,
       });
       sendToN8n(payload).catch(() => {});
     }
@@ -440,6 +528,8 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
         extractedLead,
         transcriptLog: ctx.transcriptLog,
         confirmedContact: ctx.confirmedContact,
+        tenantKey,
+        companyName,
       });
       await sendTelegramMessage(tgText);
     }
@@ -453,6 +543,8 @@ export function createReporters({ fetchFn, redis, PUBLIC_BASE_URL, OPENAI_API_KE
         lastLang: ctx.lastLang,
         status,
         confirmedContact: ctx.confirmedContact,
+        tenantKey,
+        companyName,
       });
       await sendToGoogleSheets(payload);
     }

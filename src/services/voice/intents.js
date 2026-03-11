@@ -1,16 +1,21 @@
 import { norm } from "./shared.js";
 
+function s(v, d = "") {
+  return String(v ?? d).trim();
+}
+
 export function callerLikelyAZ(fromE164) {
-  const x = String(fromE164 || "").trim();
+  const x = s(fromE164);
   return x.startsWith("+994") || x.startsWith("994");
 }
 
-export function detectLang(text) {
-  const t = String(text || "").trim();
-  if (!t) return "az";
+export function detectLang(text, fallback = "en") {
+  const t = s(text);
+  if (!t) return s(fallback, "en").toLowerCase();
   if (/[А-Яа-яЁё]/.test(t)) return "ru";
 
   const low = norm(t);
+
   let az = 0;
   let tr = 0;
   let en = 0;
@@ -52,7 +57,7 @@ export function detectLang(text) {
     ["de", de],
   ].sort((a, b) => b[1] - a[1]);
 
-  if (scores[0][1] < 3) return "az";
+  if (scores[0][1] < 3) return s(fallback, "en").toLowerCase();
   return scores[0][0];
 }
 
@@ -242,7 +247,7 @@ export function looksClearlyOffTopic(text, tenantConfig = null) {
 }
 
 export function isMeaningfulTranscript(t, minChars) {
-  const x = String(t || "").trim();
+  const x = s(t);
   if (x.length < minChars) return false;
   if (!/[a-zA-Z0-9əğıöüşçƏĞİÖÜŞÇА-Яа-яЁё]/.test(x)) return false;
 

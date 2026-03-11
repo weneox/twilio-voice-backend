@@ -1,32 +1,32 @@
 import { s } from "./shared.js";
 
-function pickLangFromMap(map, fallback = "az") {
+function pickLangFromMap(map, fallback = "en") {
   const m = map && typeof map === "object" ? map : {};
-  const f = String(fallback || "az").toLowerCase();
+  const f = String(fallback || "en").toLowerCase();
+
   if (m[f]) return f;
-  if (m.az) return "az";
+  if (m.en) return "en";
+
   const first = Object.keys(m)[0];
-  return first || "az";
+  return first || "en";
 }
 
 function getVoiceProfile(tenantConfig = null) {
-  const vp = tenantConfig?.voiceProfile && typeof tenantConfig.voiceProfile === "object"
-    ? tenantConfig.voiceProfile
-    : {};
+  const vp =
+    tenantConfig?.voiceProfile && typeof tenantConfig.voiceProfile === "object"
+      ? tenantConfig.voiceProfile
+      : {};
 
-  const companyName = s(
-    vp.companyName || tenantConfig?.companyName,
-    "Company"
-  );
-
+  const companyName = s(vp.companyName || tenantConfig?.companyName, "Company");
   const assistantName = s(vp.assistantName, "Virtual Assistant");
   const roleLabel = s(vp.roleLabel, "virtual assistant");
-  const defaultLang = s(vp.defaultLanguage || tenantConfig?.defaultLanguage, "az").toLowerCase();
+  const defaultLang = s(vp.defaultLanguage || tenantConfig?.defaultLanguage, "en").toLowerCase();
 
   const contactPhoneLocal = s(tenantConfig?.contact?.phoneLocal, "");
   const contactPhoneIntl = s(tenantConfig?.contact?.phoneIntl, "");
   const contactEmailLocal = s(tenantConfig?.contact?.emailLocal, "");
   const contactEmailIntl = s(tenantConfig?.contact?.emailIntl, "");
+  const website = s(tenantConfig?.contact?.website, "");
 
   const texts = vp.texts && typeof vp.texts === "object" ? vp.texts : {};
 
@@ -39,6 +39,7 @@ function getVoiceProfile(tenantConfig = null) {
     contactPhoneIntl,
     contactEmailLocal,
     contactEmailIntl,
+    website,
     texts,
   };
 }
@@ -60,11 +61,11 @@ function makeDefaultTexts(profile) {
     misheard: {
       az: "Bağışlayın, sizi aydın eşitmədim. Zəhmət olmasa bir daha təkrar edin.",
       tr: "Kusura bakmayın, net duyamadım. Lütfen bir kez daha tekrar eder misiniz?",
-      ru: "Извините, я не расслышала. Повторите, пожалуйста, ещё раз.",
+      ru: "Извините, я не расслышал(а). Повторите, пожалуйста, ещё раз.",
       en: "Sorry, I couldn’t hear that clearly. Could you please repeat it once more?",
       es: "Perdón, no lo escuché bien. ¿Podrías repetirlo una vez más?",
       de: "Entschuldigung, ich habe das nicht klar gehört. Können Sie es bitte wiederholen?",
-      fr: "Désolée, je n’ai pas bien entendu. Pouvez-vous répéter une fois, s’il vous plaît ?",
+      fr: "Désolé(e), je n’ai pas bien entendu. Pouvez-vous répéter une fois, s’il vous plaît ?",
     },
 
     off_topic: {
@@ -74,7 +75,7 @@ function makeDefaultTexts(profile) {
       en: `Sorry, I can only help with topics related to ${companyName}.`,
       es: `Lo siento, solo puedo ayudar con temas relacionados con ${companyName}.`,
       de: `Entschuldigung, ich kann nur bei Themen rund um ${companyName} helfen.`,
-      fr: `Désolée, je peux aider uniquement sur les sujets liés à ${companyName}.`,
+      fr: `Désolé(e), je peux aider uniquement sur les sujets liés à ${companyName}.`,
     },
 
     goodbye: {
@@ -100,7 +101,7 @@ function makeDefaultTexts(profile) {
     ask_contact: {
       az: "Başa düşdüm. Əlaqə üçün adınızı və telefon nömrənizi rəqəm-rəqəm deyin.",
       tr: "Anladım. İletişim için adınızı ve telefon numaranızı rakam rakam söyleyin.",
-      ru: "Поняла. Для связи назовите, пожалуйста, имя и номер телефона цифра за цифрой.",
+      ru: "Понял(а). Для связи назовите, пожалуйста, имя и номер телефона цифра за цифрой.",
       en: "Got it. Please say your name and phone number digit by digit so we can contact you.",
       es: "Entendido. Dime tu nombre y tu número de teléfono dígito por dígito para poder contactarte.",
       de: "Verstanden. Bitte nennen Sie Ihren Namen und Ihre Telefonnummer Ziffer für Ziffer, damit wir Sie kontaktieren können.",
@@ -150,11 +151,21 @@ function makeDefaultTexts(profile) {
     fallback_short: {
       az: `${assistantName} olaraq sizə kömək etməyə hazıram. Buyurun, davam edin.`,
       tr: `${assistantName} olarak size yardımcı olmaya hazırım. Buyurun, devam edin.`,
-      ru: `Я готова помочь вам как ${roleLabel}. Продолжайте, пожалуйста.`,
+      ru: `Я готов(а) помочь вам как ${roleLabel}. Продолжайте, пожалуйста.`,
       en: `I’m ready to help you as the ${roleLabel}. Please continue.`,
-      es: `Estoy lista para ayudarte como ${roleLabel}. Continúa, por favor.`,
+      es: `Estoy listo/a para ayudarte como ${roleLabel}. Continúa, por favor.`,
       de: `Ich bin bereit, Ihnen als ${roleLabel} zu helfen. Bitte fahren Sie fort.`,
-      fr: `Je suis prête à vous aider en tant que ${roleLabel}. Continuez, s’il vous plaît.`,
+      fr: `Je suis prêt(e) à vous aider en tant que ${roleLabel}. Continuez, s’il vous plaît.`,
+    },
+
+    contact_unavailable: {
+      az: "Hazırda əlaqə məlumatı mövcud deyil.",
+      tr: "Şu anda iletişim bilgileri mevcut değil.",
+      ru: "Контактные данные сейчас недоступны.",
+      en: "Contact details are not currently available.",
+      es: "Los datos de contacto no están disponibles en este momento.",
+      de: "Kontaktdaten sind derzeit nicht verfügbar.",
+      fr: "Les coordonnées ne sont pas disponibles pour le moment.",
     },
   };
 }
@@ -188,22 +199,25 @@ export function makeI18n(tenantConfig = null) {
     contactPhoneIntl: profile.contactPhoneIntl,
     contactEmailLocal: profile.contactEmailLocal,
     contactEmailIntl: profile.contactEmailIntl,
+    website: profile.website,
     texts: mergedTexts,
   };
 }
 
 export function pickLang(lang, dict) {
-  const L = String(lang || dict?.defaultLang || "az").toLowerCase();
+  const L = String(lang || dict?.defaultLang || "en").toLowerCase();
   const greetingMap = dict?.texts?.greeting || {};
+
   if (greetingMap[L]) return L;
-  return pickLangFromMap(greetingMap, dict?.defaultLang || "az");
+  return pickLangFromMap(greetingMap, dict?.defaultLang || "en");
 }
 
 function readText(bucket, lang, tenantConfig = null) {
   const dict = makeI18n(tenantConfig);
   const L = pickLang(lang, dict);
   const map = dict?.texts?.[bucket] || {};
-  return map[L] || map.az || Object.values(map)[0] || "";
+
+  return map[L] || map.en || Object.values(map)[0] || "";
 }
 
 export function getGreeting(lang, tenantConfig = null) {
@@ -246,23 +260,47 @@ export function fallbackShort(lang, tenantConfig = null) {
   return readText("fallback_short", lang, tenantConfig);
 }
 
+export function contactUnavailableReply(lang, tenantConfig = null) {
+  return readText("contact_unavailable", lang, tenantConfig);
+}
+
 export function buildContactReply(lang, isAz, tenantConfig = null) {
   const dict = makeI18n(tenantConfig);
   const L = pickLang(lang, dict);
 
   const phone = isAz ? dict.contactPhoneLocal : dict.contactPhoneIntl;
   const email = isAz ? dict.contactEmailLocal : dict.contactEmailIntl;
-  const companyName = dict.companyName;
 
-  if (phone || email) {
-    if (L === "ru") return `Контакты ${companyName}: телефон ${phone || "-"}, email ${email || "-"}. Соединить с оператором?`;
-    if (L === "tr") return `${companyName} iletişim: telefon ${phone || "-"}, e-posta ${email || "-"}. Operatöre bağlayayım mı?`;
-    if (L === "en") return `${companyName} contact: phone ${phone || "-"}, email ${email || "-"}. Connect you to an operator?`;
-    if (L === "es") return `Contacto ${companyName}: teléfono ${phone || "-"}, email ${email || "-"}. ¿Te conecto con un operador?`;
-    if (L === "de") return `${companyName} Kontakt: Telefon ${phone || "-"}, E-Mail ${email || "-"}. Soll ich Sie mit einem Operator verbinden?`;
-    if (L === "fr") return `Contact ${companyName} : téléphone ${phone || "-"}, email ${email || "-"}. Voulez-vous être mis en relation avec un opérateur ?`;
-    return `Əlaqə: ${phone || "-"}, email: ${email || "-"}. Operatora qoşum?`;
+  const parts = [];
+  if (phone) parts.push({ key: "phone", value: phone });
+  if (email) parts.push({ key: "email", value: email });
+
+  if (!parts.length) {
+    return contactUnavailableReply(lang, tenantConfig);
   }
 
-  return readText("transfer_offer", lang, tenantConfig);
+  const phoneValue = phone || "-";
+  const emailValue = email || "-";
+  const companyName = dict.companyName;
+
+  if (L === "ru") {
+    return `Контакты ${companyName}: телефон ${phoneValue}, email ${emailValue}. Соединить с оператором?`;
+  }
+  if (L === "tr") {
+    return `${companyName} iletişim: telefon ${phoneValue}, e-posta ${emailValue}. Operatöre bağlayayım mı?`;
+  }
+  if (L === "en") {
+    return `${companyName} contact: phone ${phoneValue}, email ${emailValue}. Connect you to an operator?`;
+  }
+  if (L === "es") {
+    return `Contacto de ${companyName}: teléfono ${phoneValue}, email ${emailValue}. ¿Te conecto con un operador?`;
+  }
+  if (L === "de") {
+    return `${companyName} Kontakt: Telefon ${phoneValue}, E-Mail ${emailValue}. Soll ich Sie mit einem Operator verbinden?`;
+  }
+  if (L === "fr") {
+    return `Contact ${companyName} : téléphone ${phoneValue}, email ${emailValue}. Voulez-vous être mis en relation avec un opérateur ?`;
+  }
+
+  return `${companyName} əlaqə: telefon ${phoneValue}, email ${emailValue}. Operatora qoşum?`;
 }

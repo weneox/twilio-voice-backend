@@ -4,6 +4,11 @@ function s(v, d = "") {
   return String(v ?? d).trim();
 }
 
+function n(v, d) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : d;
+}
+
 function clone(x) {
   return x ? JSON.parse(JSON.stringify(x)) : x;
 }
@@ -38,22 +43,26 @@ function mergeDeep(base, extra) {
   return out;
 }
 
-const LOCAL_TENANTS = {
-  default: {
+function buildGenericBaseConfig(tenant = {}) {
+  const tenantKey = s(tenant?.tenantKey || cfg.DEFAULT_TENANT_KEY || "default").toLowerCase();
+  const defaultLanguage = s(cfg.DEFAULT_LANGUAGE || "en").toLowerCase();
+
+  return {
     ok: true,
-    tenantKey: s(cfg.DEFAULT_TENANT_KEY, "default"),
-    companyName: "NEOX",
-    defaultLanguage: "az",
+    tenantKey,
+    companyName: s(tenant?.companyName || "Company"),
+    defaultLanguage,
 
     contact: {
-      phoneLocal: "051 800 55 77",
-      phoneIntl: "+994 51 800 55 77",
-      emailLocal: "info@neox.az",
-      emailIntl: "info@weneox.com",
+      phoneLocal: "",
+      phoneIntl: "",
+      emailLocal: "",
+      emailIntl: "",
+      website: "",
     },
 
     operator: {
-      phone: s(cfg.OPERATOR_PHONE, "+994518005577"),
+      phone: s(cfg.OPERATOR_PHONE),
       callerId: s(cfg.TWILIO_CALLER_ID),
     },
 
@@ -61,40 +70,34 @@ const LOCAL_TENANTS = {
       model: s(cfg.OPENAI_REALTIME_MODEL, "gpt-4o-realtime-preview"),
       voice: s(cfg.OPENAI_REALTIME_VOICE, "alloy"),
       instructions: s(cfg.OPENAI_REALTIME_INSTRUCTIONS),
-      reconnectMax: Number(cfg.OPENAI_REALTIME_RECONNECT_MAX || 2) || 2,
+      reconnectMax: n(cfg.OPENAI_REALTIME_RECONNECT_MAX, 2),
     },
 
     voiceProfile: {
-      companyName: "NEOX",
-      assistantName: "Ayla",
+      companyName: s(tenant?.companyName || "Company"),
+      assistantName: "",
       roleLabel: "virtual assistant",
-      defaultLanguage: "az",
-      purpose: "sales",
-      tone: "warm_professional",
+      defaultLanguage,
+      purpose: "general",
+      tone: "professional",
       answerStyle: "short_clear",
       askStyle: "single_question",
-      businessSummary:
-        "NEOX şirkəti veb sayt, AI chatbot, səsli AI agent və biznes avtomatlaşdırma həlləri təqdim edir.",
-      allowedTopics: ["xidmətlər", "qiymət", "təklif", "əlaqə", "operator", "görüş"],
-      forbiddenTopics: ["politics", "religion"],
-      leadCaptureMode: "name_phone",
-      transferMode: "operator",
+      businessSummary: "",
+      allowedTopics: [],
+      forbiddenTopics: [],
+      leadCaptureMode: "none",
+      transferMode: "manual",
       contactPolicy: {
-        sharePhone: true,
-        shareEmail: true,
+        sharePhone: false,
+        shareEmail: false,
         shareWebsite: false,
       },
       texts: {
-        greeting: {
-          az: "Salam, mən NEOX şirkətinin virtual asistentiyəm. Sizə necə kömək edə bilərəm?",
-          en: "Hello! I’m the virtual assistant for NEOX. How can I help you?",
-          ru: "Здравствуйте! Я виртуальный ассистент компании NEOX. Чем могу помочь?",
-          tr: "Merhaba, ben NEOX şirketinin sanal asistanıyım. Size nasıl yardımcı olabilirim?",
-        },
+        greeting: {},
       },
     },
-  },
-};
+  };
+}
 
 async function tryFetchTenantFromAiHq({ tenantKey, toNumber }) {
   if (!cfg.AIHQ_BASE_URL || !cfg.AIHQ_INTERNAL_TOKEN) {
@@ -161,47 +164,54 @@ async function tryFetchTenantFromAiHq({ tenantKey, toNumber }) {
   }
 }
 
-function buildLocalResolvedConfig(tenant) {
-  const localKey = s(tenant?.tenantKey).toLowerCase();
-
-  if (localKey && LOCAL_TENANTS[localKey]) {
-    return clone(LOCAL_TENANTS[localKey]);
-  }
-
-  const fallback = clone(LOCAL_TENANTS.default);
-  fallback.tenantKey = s(tenant?.tenantKey, fallback.tenantKey || "default");
-  return fallback;
-}
-
 function finalizeConfig(remoteConfig, tenant) {
-  const localBase = buildLocalResolvedConfig(tenant);
+  const base = buildGenericBaseConfig(tenant);
 
-  if (!remoteConfig) return localBase;
+  if (!remoteConfig) return base;
 
-  const merged = mergeDeep(localBase, remoteConfig);
+  const merged = mergeDeep(base, remoteConfig);
 
   merged.ok = true;
   merged.tenantKey = s(
-    remoteConfig?.tenantKey || tenant?.tenantKey || localBase.tenantKey || "default"
-  );
-  merged.companyName = s(
-    remoteConfig?.companyName || localBase.companyName || merged.tenantKey
-  );
-  merged.defaultLanguage = s(
-    remoteConfig?.defaultLanguage || localBase.defaultLanguage || "az"
+    remoteConfig?.tenantKey || tenant?.tenantKey || base.tenantKey || "default"
   ).toLowerCase();
 
-  merged.contact = mergeDeep(localBase.contact || {}, remoteConfig?.contact || {});
-  merged.operator = mergeDeep(localBase.operator || {}, remoteConfig?.operator || {});
-  merged.realtime = mergeDeep(localBase.realtime || {}, remoteConfig?.realtime || {});
-  merged.voiceProfile = mergeDeep(localBase.voiceProfile || {}, remoteConfig?.voiceProfile || {});
+  merged.companyName = s(
+    remoteConfig?.companyName || tenant?.companyName || base.companyName || "Company"
+  );
+
+  merged.defaultLanguage = s(
+    remoteConfig?.defaultLanguage || base.defaultLanguage || "en"
+  ).toLowerCase();
+
+  merged.contact = mergeDeep(base.contact || {}, remoteConfig?.contact || {});
+  merged.operator = mergeDeep(base.operator || {}, remoteConfig?.operator || {});
+  merged.realtime = mergeDeep(base.realtime || {}, remoteConfig?.realtime || {});
+  merged.voiceProfile = mergeDeep(base.voiceProfile || {}, remoteConfig?.voiceProfile || {});
 
   merged.voiceProfile.companyName = s(
     merged.voiceProfile.companyName || merged.companyName || "Company"
   );
+
   merged.voiceProfile.defaultLanguage = s(
-    merged.voiceProfile.defaultLanguage || merged.defaultLanguage || "az"
+    merged.voiceProfile.defaultLanguage || merged.defaultLanguage || "en"
   ).toLowerCase();
+
+  if (!isObj(merged.voiceProfile.contactPolicy)) {
+    merged.voiceProfile.contactPolicy = {
+      sharePhone: false,
+      shareEmail: false,
+      shareWebsite: false,
+    };
+  }
+
+  if (!isObj(merged.voiceProfile.texts)) {
+    merged.voiceProfile.texts = {};
+  }
+
+  if (!isObj(merged.voiceProfile.texts.greeting)) {
+    merged.voiceProfile.texts.greeting = {};
+  }
 
   return merged;
 }

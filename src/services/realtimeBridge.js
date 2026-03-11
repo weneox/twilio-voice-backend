@@ -7,9 +7,29 @@ import {
   callerLikelyAZ,
   buildContactReply,
   getGreeting,
+  detectLang,
 } from "./realtimeBridge.core.js";
 import { getTenantVoiceConfig } from "./tenantConfig.js";
 import { s, sendTwilioMedia, getBridgeEnv } from "./bridge/shared.js";
+
+function detectDefaultLang(tenantConfig = null) {
+  return s(
+    tenantConfig?.voiceProfile?.defaultLanguage || tenantConfig?.defaultLanguage,
+    "en"
+  ).toLowerCase();
+}
+
+function buildTransferUnavailablePrefix(lang) {
+  const L = s(lang, "en").toLowerCase();
+
+  if (L === "ru") return "Не удалось перевести звонок на оператора.";
+  if (L === "tr") return "Operatöre yönlendirme mümkün olmadı.";
+  if (L === "en") return "Operator transfer is not available right now.";
+  if (L === "es") return "La transferencia al operador no está disponible en este momento.";
+  if (L === "de") return "Die Weiterleitung zum Operator ist im Moment nicht verfügbar.";
+  if (L === "fr") return "Le transfert vers un opérateur n’est pas disponible pour le moment.";
+  return "Operatora yönləndirmə hazırda mümkün olmadı.";
+}
 
 export function attachRealtimeBridge({
   wss,
@@ -73,7 +93,7 @@ export function attachRealtimeBridge({
     let lastInboundAt = 0;
 
     let lastFinalTranscript = "";
-    let lastLang = "az";
+    let lastLang = "en";
 
     let greeted = false;
     let greetingInProgress = false;
@@ -177,11 +197,19 @@ export function attachRealtimeBridge({
 
     async function redirectToTransfer() {
       if (!twilioClient || !callSid) return false;
+
       const base = String(PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
       if (!base.startsWith("http")) return false;
+
+      const department = encodeURIComponent(
+        s(core?.state?.resolvedDepartment || core?.state?.requestedDepartment || "")
+      );
+      const lang = encodeURIComponent(s(core?.state?.lastLang || lastLang || detectDefaultLang(tenantConfig)));
+      const url = `${base}/twilio/transfer?department=${department}&lang=${lang}`;
+
       try {
         await twilioClient.calls(callSid).update({
-          url: `${base}/twilio/transfer`,
+          url,
           method: "POST",
         });
         return true;
@@ -192,13 +220,8 @@ export function attachRealtimeBridge({
     }
 
     function currentGreeting() {
-      const langForGreeting = "az";
-      const fromTenant =
-        tenantConfig?.greeting?.[langForGreeting] ||
-        tenantConfig?.greeting?.az ||
-        "";
-
-      return fromTenant || getGreeting(langForGreeting, tenantConfig);
+      const langForGreeting = detectDefaultLang(tenantConfig);
+      return getGreeting(langForGreeting, tenantConfig);
     }
 
     function currentInstructions() {
@@ -290,7 +313,7 @@ export function attachRealtimeBridge({
       greetingInProgress = true;
       greetingStartedAt = Date.now();
       try {
-        core?.markGreetingStarted?.(lastLang || "az");
+        core?.markGreetingStarted?.(lastLang || detectDefaultLang(tenantConfig));
       } catch {}
     }
 
@@ -313,6 +336,7 @@ export function attachRealtimeBridge({
       metricResponses += 1;
 
       const greeting = currentGreeting();
+      const greetingLang = detectDefaultLang(tenantConfig);
 
       try {
         openaiWs.send(
@@ -323,7 +347,7 @@ export function attachRealtimeBridge({
               temperature: rtTemp(0.62),
               max_output_tokens: 240,
               instructions:
-                `Say EXACTLY this full sentence in Azerbaijani, smoothly, without stopping mid-sentence: "${greeting}" ` +
+                `Say EXACTLY this full sentence in ${greetingLang}, smoothly, without stopping mid-sentence: "${greeting}" ` +
                 `Then STOP completely and wait for the user. Do not add anything else.`,
             },
           })
@@ -340,6 +364,7 @@ export function attachRealtimeBridge({
           setPending(false);
         }
       }, GREETING_PROTECT_MS + 1600);
+
       try {
         t.unref?.();
       } catch {}
@@ -373,7 +398,7 @@ export function attachRealtimeBridge({
       } else {
         core.state.inboundChunkCount = inboundChunkCount;
         try {
-          core.maybeMisheard(lastLang || "az");
+          core.maybeMisheard(lastLang || detectDefaultLang(tenantConfig));
         } catch {}
       }
 
@@ -517,7 +542,7 @@ export function attachRealtimeBridge({
           if (text) {
             lastFinalTranscript = text;
             core.pushTranscript(text);
-            lastLang = core.state.lastLang || lastLang;
+            lastLang = core.state.lastLang || detectLang(text, detectDefaultLang(tenantConfig));
             dlog("transcript", text);
           }
           return;
@@ -555,11 +580,20 @@ export function attachRealtimeBridge({
           if (core.state.transferArmed) {
             core.state.transferArmed = false;
             const ok = await redirectToTransfer();
+
             if (!ok) {
               const isAzCaller = callerLikelyAZ(fromNumber);
-              const contact = buildContactReply(core.state.lastLang || "az", isAzCaller, tenantConfig);
+              const contact = buildContactReply(
+                core.state.lastLang || detectDefaultLang(tenantConfig),
+                isAzCaller,
+                tenantConfig
+              );
+              const prefix = buildTransferUnavailablePrefix(
+                core.state.lastLang || detectDefaultLang(tenantConfig)
+              );
+
               sendResponse(
-                `Say this in user's language as ONE sentence: "Operatora yönləndirmə mümkün olmadı. ${contact}" Then stop.`,
+                `Say this in user's language as ONE sentence: "${prefix} ${contact}" Then stop.`,
                 { temperature: 0.6, maxTokens: 120 }
               );
             }
@@ -656,7 +690,7 @@ export function attachRealtimeBridge({
         hangupAfterDone = false;
 
         lastFinalTranscript = "";
-        lastLang = "az";
+        lastLang = detectDefaultLang(tenantConfig);
         sawSpeechStart = false;
         lastInboundAt = 0;
 
